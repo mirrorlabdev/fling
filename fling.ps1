@@ -80,6 +80,7 @@ $defaults = @{
     hotkey = 'Ctrl+Oem3'
     hkToggleClear = ''
     hkToggleEnter = ''
+    opacity = 0.95
 }
 
 function LoadSettings {
@@ -107,6 +108,7 @@ function SaveSettings {
         hotkey = $script:hotkeyName
         hkToggleClear = $settings.hkToggleClear
         hkToggleEnter = $settings.hkToggleEnter
+        opacity = $form.Opacity
     }
     $s | ConvertTo-Json | Set-Content $settingsPath -Encoding UTF8
 }
@@ -176,7 +178,7 @@ function MakeToggle($text, $checked, $x) {
 $form = New-Object System.Windows.Forms.Form
 $form.Text            = "Fling"
 $form.TopMost         = $settings.topMost
-$form.Opacity         = 0.95
+$form.Opacity         = $settings.opacity
 $form.Size            = New-Object System.Drawing.Size($settings.w, $settings.h)
 $form.MinimumSize     = New-Object System.Drawing.Size(400, 110)
 $form.StartPosition   = 'Manual'
@@ -228,7 +230,7 @@ $optPanel.Add_Resize({
 function ShowSettings {
     $dlg = New-Object System.Windows.Forms.Form
     $dlg.Text            = 'Fling Settings'
-    $dlg.Size            = New-Object System.Drawing.Size(400, 280)
+    $dlg.Size            = New-Object System.Drawing.Size(400, 350)
     $dlg.FormBorderStyle = 'FixedDialog'
     $dlg.StartPosition   = 'CenterParent'
     $dlg.MaximizeBox     = $false
@@ -316,12 +318,45 @@ function ShowSettings {
     $hintLbl.ForeColor = $fgDim
     $hintLbl.Font      = New-Object System.Drawing.Font('Segoe UI', 8)
     $dlg.Controls.Add($hintLbl)
+    $yPos += 30
+
+    # Opacity slider
+    $opLbl = New-Object System.Windows.Forms.Label
+    $opLbl.Text      = 'Opacity'
+    $opLbl.Location  = New-Object System.Drawing.Point(20, ($yPos + 5))
+    $opLbl.AutoSize  = $true
+    $opLbl.ForeColor = $fgText
+    $opLbl.Font      = $dlgFont
+    $dlg.Controls.Add($opLbl)
+
+    $opVal = New-Object System.Windows.Forms.Label
+    $opVal.Text      = [string][int]($form.Opacity * 100) + '%'
+    $opVal.Location  = New-Object System.Drawing.Point(340, ($yPos + 5))
+    $opVal.AutoSize  = $true
+    $opVal.ForeColor = $accent
+    $opVal.Font      = $dlgFontSm
+    $dlg.Controls.Add($opVal)
+
+    $opSlider = New-Object System.Windows.Forms.TrackBar
+    $opSlider.Location  = New-Object System.Drawing.Point(100, $yPos)
+    $opSlider.Size      = New-Object System.Drawing.Size(235, 30)
+    $opSlider.Minimum   = 30
+    $opSlider.Maximum   = 100
+    $opSlider.Value     = [int]($form.Opacity * 100)
+    $opSlider.TickFrequency = 10
+    $opSlider.BackColor = $bgDark
+    $opSlider.Add_Scroll({
+        $form.Opacity = $opSlider.Value / 100.0
+        $opVal.Text = "$($opSlider.Value)%"
+    })
+    $dlg.Controls.Add($opSlider)
+    $yPos += 45
 
     # Save button
     $btnSave = New-Object System.Windows.Forms.Button
     $btnSave.Text      = 'Save'
     $btnSave.Size      = New-Object System.Drawing.Size(80, 30)
-    $btnSave.Location  = New-Object System.Drawing.Point(200, ($yPos + 35))
+    $btnSave.Location  = New-Object System.Drawing.Point(200, ($yPos + 5))
     $btnSave.FlatStyle = 'Flat'
     $btnSave.BackColor = $accent
     $btnSave.ForeColor = [System.Drawing.Color]::White
@@ -331,7 +366,7 @@ function ShowSettings {
     $btnCancel = New-Object System.Windows.Forms.Button
     $btnCancel.Text      = 'Cancel'
     $btnCancel.Size      = New-Object System.Drawing.Size(80, 30)
-    $btnCancel.Location  = New-Object System.Drawing.Point(290, ($yPos + 35))
+    $btnCancel.Location  = New-Object System.Drawing.Point(290, ($yPos + 5))
     $btnCancel.FlatStyle = 'Flat'
     $btnCancel.BackColor = $btnOff
     $btnCancel.ForeColor = $btnOffTxt
@@ -352,6 +387,7 @@ function ShowSettings {
     $btnCancel.Add_Click({ $dlg.Close() })
 
     $dlg.Controls.AddRange(@($btnSave, $btnCancel))
+    $dlg.ActiveControl = $opSlider
     $dlg.ShowDialog($form) | Out-Null
 }
 
@@ -403,21 +439,28 @@ $form.Controls.Add($label)
 $form.Controls.Add($optPanel)
 
 # ── File drag & drop ──
+$textContentExts = @('.md', '.txt')
+
 $textBox.Add_DragEnter({
     param($sender, $e)
     if ($e.Data.GetDataPresent([System.Windows.Forms.DataFormats]::FileDrop)) {
         $files = $e.Data.GetData([System.Windows.Forms.DataFormats]::FileDrop)
-        $validExts = @('.md', '.txt')
-        $hasValid = $false
-        foreach ($f in $files) {
-            if ($validExts -contains [System.IO.Path]::GetExtension($f).ToLower()) {
-                $hasValid = $true; break
-            }
-        }
-        if ($hasValid) {
+        if ($chkPath.Checked) {
+            # Path mode: accept any file
             $e.Effect = [System.Windows.Forms.DragDropEffects]::Copy
         } else {
-            $e.Effect = [System.Windows.Forms.DragDropEffects]::None
+            # Content mode: .md/.txt only
+            $hasValid = $false
+            foreach ($f in $files) {
+                if ($textContentExts -contains [System.IO.Path]::GetExtension($f).ToLower()) {
+                    $hasValid = $true; break
+                }
+            }
+            if ($hasValid) {
+                $e.Effect = [System.Windows.Forms.DragDropEffects]::Copy
+            } else {
+                $e.Effect = [System.Windows.Forms.DragDropEffects]::None
+            }
         }
     }
 })
@@ -425,21 +468,22 @@ $textBox.Add_DragEnter({
 $textBox.Add_DragDrop({
     param($sender, $e)
     $files = $e.Data.GetData([System.Windows.Forms.DataFormats]::FileDrop)
-    $validExts = @('.md', '.txt')
     foreach ($f in $files) {
         $ext = [System.IO.Path]::GetExtension($f).ToLower()
-        if ($validExts -contains $ext) {
-            $fileName = [System.IO.Path]::GetFileName($f)
-            if ($chkPath.Checked) {
-                $insert = $f
-            } else {
-                $content = [System.IO.File]::ReadAllText($f, [System.Text.Encoding]::UTF8)
-                $insert = "[$fileName]`r`n$content"
-            }
-            $pos = $textBox.SelectionStart
-            $textBox.Text = $textBox.Text.Insert($pos, $insert)
-            $textBox.SelectionStart = $pos + $insert.Length
+        $fileName = [System.IO.Path]::GetFileName($f)
+        if ($chkPath.Checked) {
+            # Path mode: any file → insert path
+            $insert = $f
+        } elseif ($textContentExts -contains $ext) {
+            # Content mode: .md/.txt → insert content
+            $content = [System.IO.File]::ReadAllText($f, [System.Text.Encoding]::UTF8)
+            $insert = "[$fileName]`r`n$content"
+        } else {
+            continue
         }
+        $pos = $textBox.SelectionStart
+        $textBox.Text = $textBox.Text.Insert($pos, $insert)
+        $textBox.SelectionStart = $pos + $insert.Length
     }
     $textBox.Focus()
 })
