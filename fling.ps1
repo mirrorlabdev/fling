@@ -312,7 +312,7 @@ function ShowSettings {
 
     # Hint
     $hintLbl = New-Object System.Windows.Forms.Label
-    $hintLbl.Text      = 'Click field + press keys  |  Right-click to clear'
+    $hintLbl.Text      = 'Click field + press keys  |  Right-click to clear  |  Ctrl+Wheel: font size'
     $hintLbl.Location  = New-Object System.Drawing.Point(20, ($yPos + 5))
     $hintLbl.AutoSize  = $true
     $hintLbl.ForeColor = $fgDim
