@@ -1,0 +1,15 @@
+﻿{
+    "y":  686,
+    "pathOnly":  true,
+    "hotkey":  "Ctrl+Space",
+    "clearAfterSend":  true,
+    "hkToggleEnter":  "Ctrl+Alt+X",
+    "x":  1047,
+    "topMost":  true,
+    "opacity":  1,
+    "w":  344,
+    "hkToggleClear":  "Ctrl+Alt+Z",
+    "autoEnter":  true,
+    "h":  310,
+    "fontSize":  14
+}

@@ -1,4 +1,4 @@
-﻿# ── Fling — Floating Input Sender ─────────────────────
+﻿# ── Fling v2 — Floating Input Sender (WPF) ───────────
 # Write once, send anywhere.
 # Ctrl+` : global hotkey (show/hide)
 # Enter  : send to last active window
@@ -6,8 +6,10 @@
 # Drag .md/.txt : insert content or path
 # ───────────────────────────────────────────────────────
 
+Add-Type -AssemblyName PresentationFramework
+Add-Type -AssemblyName PresentationCore
+Add-Type -AssemblyName WindowsBase
 Add-Type -AssemblyName System.Windows.Forms
-Add-Type -AssemblyName System.Drawing
 
 # ── Win32 API ──
 $memberDef = '[DllImport("user32.dll")] public static extern IntPtr GetForegroundWindow();
@@ -49,7 +51,6 @@ function SendEnterKey {
 
 function GetTargetHint([IntPtr]$hwnd) {
     if ($hwnd -eq [IntPtr]::Zero) { return '' }
-    # Process name
     [uint32]$hintPid = 0
     [Fling.W32]::GetWindowThreadProcessId($hwnd, [ref]$hintPid) | Out-Null
     $procName = ''
@@ -57,22 +58,18 @@ function GetTargetHint([IntPtr]$hwnd) {
         $proc = [System.Diagnostics.Process]::GetProcessById([int]$hintPid)
         $procName = $proc.ProcessName
     } catch {}
-    # Window title
     $sb = New-Object System.Text.StringBuilder 256
     [Fling.W32]::GetWindowText($hwnd, $sb, 256) | Out-Null
     $title = $sb.ToString()
-    # Shorten title
     if ($title.Length -gt 40) { $title = $title.Substring(0, 37) + '...' }
-    if ($title) {
-        return "$procName  ($title)"
-    }
+    if ($title) { return "$procName  ($title)" }
     return $procName
 }
 
-# ── Settings file ──
+# ── Settings ──
 $settingsPath = Join-Path $PSScriptRoot 'fling-settings.json'
 $defaults = @{
-    x = 200; y = 840; w = 720; h = 160
+    x = 200; y = 840; w = 720; h = 170
     topMost = $true
     clearAfterSend = $true
     autoEnter = $true
@@ -81,8 +78,7 @@ $defaults = @{
     hkToggleClear = ''
     hkToggleEnter = ''
     opacity = 0.95
-    fontName = 'Segoe UI'
-    fontSize = 13
+    fontSize = 14
 }
 
 function LoadSettings {
@@ -99,503 +95,320 @@ function LoadSettings {
     return $defaults.Clone()
 }
 
-function SaveSettings {
-    $s = @{
-        x = $form.Location.X; y = $form.Location.Y
-        w = $form.Size.Width;  h = $form.Size.Height
-        topMost = $form.TopMost
-        clearAfterSend = $chkClear.Checked
-        autoEnter = $chkEnter.Checked
-        pathOnly = $chkPath.Checked
-        hotkey = $script:hotkeyName
-        hkToggleClear = $settings.hkToggleClear
-        hkToggleEnter = $settings.hkToggleEnter
-        opacity = $form.Opacity
-        fontName = $textBox.Font.FontFamily.Name
-        fontSize = [int]$textBox.Font.Size
+$settings = LoadSettings
+$script:targetHwnd = [IntPtr]::Zero
+$script:sendStep   = 'idle'
+$script:oldClipText = $null
+$script:hotkeyName = $settings.hotkey
+
+# ── WPF Window (XAML) ──
+[xml]$xaml = @"
+<Window xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        Title="Fling" WindowStyle="None" AllowsTransparency="True"
+        ShowInTaskbar="False" Background="Transparent"
+        ResizeMode="CanResizeWithGrip">
+    <Border Name="bgBorder" Background="#1e1e2e" CornerRadius="6" Padding="2">
+    <Grid>
+        <Grid.RowDefinitions>
+            <RowDefinition Height="20"/>
+            <RowDefinition Height="*"/>
+            <RowDefinition Height="30"/>
+        </Grid.RowDefinitions>
+
+        <!-- Target hint (draggable) + close button -->
+        <DockPanel Grid.Row="0" Background="Transparent" Name="dpTitle">
+            <Button Name="btnClose" DockPanel.Dock="Right" Content="&#x2715;"
+                    Width="24" Height="18" FontSize="10"
+                    Foreground="#646478" Background="Transparent"
+                    BorderThickness="0" Cursor="Hand" VerticalAlignment="Center"/>
+            <TextBlock Name="lblTarget" Text="Ctrl+`  show/hide"
+                       Foreground="#646478" FontSize="11" FontFamily="Segoe UI"
+                       Padding="8,2,0,0" VerticalAlignment="Center"/>
+        </DockPanel>
+
+        <!-- Main input -->
+        <TextBox Name="tbInput" Grid.Row="1"
+                 FontSize="14" FontFamily="Segoe UI"
+                 Background="#181825" Foreground="#cdd6f4"
+                 CaretBrush="#10b981" SelectionBrush="#10b981"
+                 AcceptsReturn="True" TextWrapping="Wrap"
+                 VerticalScrollBarVisibility="Auto"
+                 BorderThickness="0" Padding="8,4,8,4"
+                 AllowDrop="True" UndoLimit="100"/>
+
+        <!-- Bottom bar -->
+        <DockPanel Name="dpBottom" Grid.Row="2" Background="#1e1e2e">
+            <Button Name="btnGear" DockPanel.Dock="Right" Content="&#x2699;"
+                    Width="28" Height="24" Margin="0,0,4,0"
+                    FontSize="14" Foreground="#646478" Background="Transparent"
+                    BorderThickness="0" Cursor="Hand"/>
+            <StackPanel Name="spBottom" Orientation="Horizontal"
+                        VerticalAlignment="Center"/>
+        </DockPanel>
+    </Grid>
+    </Border>
+</Window>
+"@
+
+$reader = New-Object System.Xml.XmlNodeReader $xaml
+$window = [System.Windows.Markup.XamlReader]::Load($reader)
+
+# Get controls
+$lblTarget = $window.FindName('lblTarget')
+$tbInput   = $window.FindName('tbInput')
+$spBottom  = $window.FindName('spBottom')
+$btnGear   = $window.FindName('btnGear')
+$dpBottom  = $window.FindName('dpBottom')
+$bgBorder  = $window.FindName('bgBorder')
+$dpTitle   = $window.FindName('dpTitle')
+$btnClose  = $window.FindName('btnClose')
+
+# Drag to move
+$dpTitle.Add_MouseLeftButtonDown({ $window.DragMove() })
+
+# Close button
+$btnClose.Add_Click({ $window.Close() })
+
+# Close button hover
+$closeTemplate = [System.Windows.Markup.XamlReader]::Parse(@'
+<ControlTemplate xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation" TargetType="Button">
+    <Border Name="bd" Background="Transparent" CornerRadius="2" Padding="{TemplateBinding Padding}">
+        <ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center"/>
+    </Border>
+    <ControlTemplate.Triggers>
+        <Trigger Property="IsMouseOver" Value="True">
+            <Setter TargetName="bd" Property="Background" Value="#e74c3c"/>
+        </Trigger>
+    </ControlTemplate.Triggers>
+</ControlTemplate>
+'@)
+$btnClose.Template = $closeTemplate
+
+# Apply settings
+$window.Width   = $settings.w
+$window.Height  = $settings.h
+$window.Left    = $settings.x
+$window.Top     = $settings.y
+$window.Topmost = $settings.topMost
+$bgBorder.Opacity = $settings.opacity
+$tbInput.FontSize = $settings.fontSize
+
+# ── Toggle Button Helper (WPF + custom template) ──
+$bc = [System.Windows.Media.BrushConverter]::new()
+$accentBrush = $bc.ConvertFrom('#10b981')
+$offBrush    = $bc.ConvertFrom('#2d2d41')
+$offFg       = $bc.ConvertFrom('#78788c')
+
+# Build a ControlTemplate that removes all default chrome
+$toggleTemplateXaml = @'
+<ControlTemplate xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+                 TargetType="ToggleButton">
+    <Border Name="bd" Background="{TemplateBinding Background}"
+            BorderBrush="{TemplateBinding BorderBrush}"
+            BorderThickness="{TemplateBinding BorderThickness}"
+            CornerRadius="2" Padding="{TemplateBinding Padding}">
+        <ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center"/>
+    </Border>
+</ControlTemplate>
+'@
+$toggleTemplate = [System.Windows.Markup.XamlReader]::Parse($toggleTemplateXaml)
+
+$gearTemplateXaml = @'
+<ControlTemplate xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+                 TargetType="Button">
+    <Border Name="bd" Background="{TemplateBinding Background}"
+            BorderThickness="0" Padding="{TemplateBinding Padding}">
+        <ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center"/>
+    </Border>
+</ControlTemplate>
+'@
+$gearTemplate = [System.Windows.Markup.XamlReader]::Parse($gearTemplateXaml)
+$btnGear.Template = $gearTemplate
+
+function ApplyToggleStyle($b) {
+    if ($b.IsChecked) {
+        $b.Background  = $accentBrush
+        $b.Foreground  = [System.Windows.Media.Brushes]::White
+        $b.BorderBrush = $accentBrush
+    } else {
+        $b.Background  = $offBrush
+        $b.Foreground  = $offFg
+        $b.BorderBrush = $offBrush
     }
-    $s | ConvertTo-Json | Set-Content $settingsPath -Encoding UTF8
 }
 
-$settings = LoadSettings
-
-# ── State ──
-$script:targetHwnd  = [IntPtr]::Zero
-$script:formHwnd    = [IntPtr]::Zero
-$script:sendStep    = 'idle'
-$script:oldClipText = $null
-$script:hotkeyName  = $settings.hotkey
-
-# ── Colors ──
-$bgDark    = [System.Drawing.Color]::FromArgb(30, 30, 46)
-$bgInput   = [System.Drawing.Color]::FromArgb(24, 24, 37)
-$fgText    = [System.Drawing.Color]::FromArgb(205, 214, 244)
-$fgDim     = [System.Drawing.Color]::FromArgb(100, 100, 120)
-$accent    = [System.Drawing.Color]::FromArgb(16, 185, 129)
-$btnOff    = [System.Drawing.Color]::FromArgb(45, 45, 65)
-$btnOffTxt = [System.Drawing.Color]::FromArgb(120, 120, 140)
-
-# ── Toggle button helper ──
-function MakeToggle($text, $checked, $x) {
-    $btn = New-Object System.Windows.Forms.CheckBox
-    $btn.Text       = $text
-    $btn.Appearance = 'Button'
-    $btn.FlatStyle  = 'Flat'
-    $btn.Font       = New-Object System.Drawing.Font('Segoe UI', 8)
+function MakeWpfToggle($text, $checked) {
+    $btn = New-Object System.Windows.Controls.Primitives.ToggleButton
+    $btn.Content    = $text
+    $btn.IsChecked  = $checked
+    $btn.FontSize   = 11
+    $btn.FontFamily = New-Object System.Windows.Media.FontFamily('Segoe UI')
     $btn.Height     = 24
-    $btn.AutoSize   = $true
-    $btn.Location   = New-Object System.Drawing.Point($x, 2)
-    $btn.Checked    = $checked
-    $btn.FlatAppearance.BorderSize = 1
-    $btn.FlatAppearance.BorderColor = $btnOff
-    $btn.FlatAppearance.CheckedBackColor    = $accent
-    $btn.FlatAppearance.MouseOverBackColor  = $accent
-    $btn.FlatAppearance.MouseDownBackColor  = $accent
+    $btn.Padding    = New-Object System.Windows.Thickness(8, 2, 8, 2)
+    $btn.Margin     = New-Object System.Windows.Thickness(2, 0, 2, 0)
+    $btn.BorderThickness = New-Object System.Windows.Thickness(1)
+    $btn.Cursor     = [System.Windows.Input.Cursors]::Hand
+    $btn.Template   = $toggleTemplate
 
-    if ($checked) {
-        $btn.BackColor = $accent; $btn.ForeColor = [System.Drawing.Color]::White
-    } else {
-        $btn.BackColor = $btnOff; $btn.ForeColor = $btnOffTxt
-        $btn.FlatAppearance.MouseOverBackColor  = $btnOff
-        $btn.FlatAppearance.MouseDownBackColor  = $btnOff
-    }
-
-    $btn.Add_CheckedChanged({
-        param($s, $ev)
-        if ($s.Checked) {
-            $s.BackColor = $accent; $s.ForeColor = [System.Drawing.Color]::White
-            $s.FlatAppearance.CheckedBackColor    = $accent
-            $s.FlatAppearance.MouseOverBackColor  = $accent
-            $s.FlatAppearance.MouseDownBackColor  = $accent
-        } else {
-            $s.BackColor = $btnOff; $s.ForeColor = $btnOffTxt
-            $s.FlatAppearance.CheckedBackColor    = $btnOff
-            $s.FlatAppearance.MouseOverBackColor  = $btnOff
-            $s.FlatAppearance.MouseDownBackColor  = $btnOff
-        }
-    })
+    ApplyToggleStyle $btn
+    $btn.Add_Checked({  param($s,$e); ApplyToggleStyle $s })
+    $btn.Add_Unchecked({ param($s,$e); ApplyToggleStyle $s })
 
     return $btn
 }
 
-# ── Form ──
-$form = New-Object System.Windows.Forms.Form
-$form.Text            = "Fling"
-$form.TopMost         = $settings.topMost
-$form.Opacity         = $settings.opacity
-$form.Size            = New-Object System.Drawing.Size($settings.w, $settings.h)
-$form.MinimumSize     = New-Object System.Drawing.Size(400, 110)
-$form.StartPosition   = 'Manual'
-$form.Location        = New-Object System.Drawing.Point($settings.x, $settings.y)
-$form.BackColor       = $bgDark
-$form.FormBorderStyle = 'SizableToolWindow'
-$form.ShowInTaskbar   = $false
+$chkClear = MakeWpfToggle 'Clear after send' $settings.clearAfterSend
+$chkEnter = MakeWpfToggle 'Auto Enter' $settings.autoEnter
+$chkPath  = MakeWpfToggle 'File: path only' $settings.pathOnly
+$chkOnTop = MakeWpfToggle 'Always on top' $settings.topMost
 
-# ── Bottom options ──
-$optPanel = New-Object System.Windows.Forms.Panel
-$optPanel.Dock      = 'Bottom'
-$optPanel.Height    = 30
-$optPanel.BackColor = $bgDark
+$chkOnTop.Add_Checked({  $window.Topmost = $true })
+$chkOnTop.Add_Unchecked({ $window.Topmost = $false })
 
-$chkClear  = MakeToggle 'Clear after send' $settings.clearAfterSend 4
-$chkEnter  = MakeToggle 'Auto Enter' $settings.autoEnter 120
-$chkPath   = MakeToggle 'File: path only' $settings.pathOnly 220
-$chkOnTop  = MakeToggle 'Always on top' $settings.topMost 330
+$spBottom.Children.Add($chkClear) | Out-Null
+$spBottom.Children.Add($chkEnter) | Out-Null
+$spBottom.Children.Add($chkPath) | Out-Null
+$spBottom.Children.Add($chkOnTop) | Out-Null
 
-$chkOnTop.Add_CheckedChanged({
-    param($s, $ev)
-    $form.TopMost = $s.Checked
-})
-
-# Gear button
-$btnGear = New-Object System.Windows.Forms.Button
-$btnGear.Text      = [char]0x2699
-$btnGear.Font      = New-Object System.Drawing.Font('Segoe UI', 11)
-$btnGear.Size      = New-Object System.Drawing.Size(28, 24)
-$btnGear.FlatStyle = 'Flat'
-$btnGear.BackColor = $bgDark
-$btnGear.ForeColor = $fgDim
-$btnGear.Anchor    = 'Right'
-$btnGear.FlatAppearance.BorderSize = 0
-$btnGear.FlatAppearance.MouseOverBackColor = $btnOff
-$btnGear.FlatAppearance.MouseDownBackColor = $btnOff
-$btnGear.Cursor    = [System.Windows.Forms.Cursors]::Hand
-
-$btnGear.Add_Click({ ShowSettings })
-
-$optPanel.Controls.AddRange(@($chkClear, $chkEnter, $chkPath, $chkOnTop, $btnGear))
-
-# Reposition gear to right edge on resize
-$optPanel.Add_Resize({
-    $btnGear.Location = New-Object System.Drawing.Point(($optPanel.Width - 34), 2)
-})
-
-# ── Settings dialog ──
-function ShowSettings {
-    $dlg = New-Object System.Windows.Forms.Form
-    $dlg.Text            = 'Fling Settings'
-    $dlg.Size            = New-Object System.Drawing.Size(400, 390)
-    $dlg.FormBorderStyle = 'FixedDialog'
-    $dlg.StartPosition   = 'CenterParent'
-    $dlg.MaximizeBox     = $false
-    $dlg.MinimizeBox     = $false
-    $dlg.BackColor       = $bgDark
-    $dlg.TopMost         = $true
-
-    $dlgFont     = New-Object System.Drawing.Font('Segoe UI', 10)
-    $dlgFontSm   = New-Object System.Drawing.Font('Segoe UI', 9)
-    $hkBg        = [System.Drawing.Color]::FromArgb(40, 40, 60)
-
-    # Hotkey definitions: label, settings key, current value
-    $hotkeyDefs = @(
-        @{ label = 'Show / Hide';       key = 'hotkey';           current = $script:hotkeyName }
-        @{ label = 'Toggle Clear';      key = 'hkToggleClear';    current = if ($settings.hkToggleClear) { $settings.hkToggleClear } else { '' } }
-        @{ label = 'Toggle Auto Enter'; key = 'hkToggleEnter';    current = if ($settings.hkToggleEnter) { $settings.hkToggleEnter } else { '' } }
-    )
-
-    $hkFields = @{}
-    $yPos = 15
-    foreach ($def in $hotkeyDefs) {
-        $lbl = New-Object System.Windows.Forms.Label
-        $lbl.Text      = $def.label
-        $lbl.Location  = New-Object System.Drawing.Point(20, ($yPos + 3))
-        $lbl.AutoSize  = $true
-        $lbl.ForeColor = $fgText
-        $lbl.Font      = $dlgFont
-        $dlg.Controls.Add($lbl)
-
-        $tb = New-Object System.Windows.Forms.TextBox
-        $tb.Location  = New-Object System.Drawing.Point(180, $yPos)
-        $tb.Size      = New-Object System.Drawing.Size(150, 28)
-        $tb.ReadOnly  = $true
-        $tb.Text      = $def.current
-        $tb.Font      = $dlgFontSm
-        $tb.BackColor = $hkBg
-        $tb.ForeColor = $accent
-        $tb.TextAlign = 'Center'
-        $tb.Tag       = $def.key
-        $tb.Cursor    = [System.Windows.Forms.Cursors]::Hand
-
-        # Click to capture
-        $tb.Add_Enter({
-            param($s, $ev)
-            $s.Text = 'Press keys...'
-            $s.ForeColor = [System.Drawing.Color]::FromArgb(255, 200, 50)
-        })
-
-        $tb.Add_KeyDown({
-            param($s, $e)
-            $e.SuppressKeyPress = $true
-            $parts = @()
-            if ($e.Control) { $parts += 'Ctrl' }
-            if ($e.Alt)     { $parts += 'Alt' }
-            if ($e.Shift)   { $parts += 'Shift' }
-            $keyName = $e.KeyCode.ToString()
-            # Skip lone modifiers
-            if ($keyName -in @('ControlKey','ShiftKey','Menu')) { return }
-            $parts += $keyName
-            $s.Text = ($parts -join '+')
-            $s.ForeColor = $accent
-            # Move focus away
-            $dlg.ActiveControl = $null
-        })
-
-        # Right-click to clear
-        $tb.Add_MouseDown({
-            param($s, $e)
-            if ($e.Button -eq [System.Windows.Forms.MouseButtons]::Right) {
-                $s.Text = ''
-                $s.ForeColor = $accent
-            }
-        })
-
-        $dlg.Controls.Add($tb)
-        $hkFields[$def.key] = $tb
-        $yPos += 40
+# ── Save Settings ──
+function SaveSettings {
+    $s = @{
+        x = [int]$window.Left; y = [int]$window.Top
+        w = [int]$window.Width; h = [int]$window.Height
+        topMost = [bool]$window.Topmost
+        clearAfterSend = [bool]$chkClear.IsChecked
+        autoEnter = [bool]$chkEnter.IsChecked
+        pathOnly = [bool]$chkPath.IsChecked
+        hotkey = $script:hotkeyName
+        hkToggleClear = $settings.hkToggleClear
+        hkToggleEnter = $settings.hkToggleEnter
+        opacity = $bgBorder.Opacity
+        fontSize = $tbInput.FontSize
     }
-
-    # Hint
-    $hintLbl = New-Object System.Windows.Forms.Label
-    $hintLbl.Text      = 'Click field + press keys  |  Right-click to clear  |  Ctrl+Wheel: font size'
-    $hintLbl.Location  = New-Object System.Drawing.Point(20, ($yPos + 5))
-    $hintLbl.AutoSize  = $true
-    $hintLbl.ForeColor = $fgDim
-    $hintLbl.Font      = New-Object System.Drawing.Font('Segoe UI', 8)
-    $dlg.Controls.Add($hintLbl)
-    $yPos += 30
-
-    # Font selector
-    $fontLbl = New-Object System.Windows.Forms.Label
-    $fontLbl.Text      = 'Font'
-    $fontLbl.Location  = New-Object System.Drawing.Point(20, ($yPos + 4))
-    $fontLbl.AutoSize  = $true
-    $fontLbl.ForeColor = $fgText
-    $fontLbl.Font      = $dlgFont
-    $dlg.Controls.Add($fontLbl)
-
-    $fontCombo = New-Object System.Windows.Forms.ComboBox
-    $fontCombo.Location      = New-Object System.Drawing.Point(100, $yPos)
-    $fontCombo.Size           = New-Object System.Drawing.Size(235, 28)
-    $fontCombo.DropDownStyle  = 'DropDownList'
-    $fontCombo.Font           = $dlgFontSm
-    $fontCombo.BackColor      = [System.Drawing.Color]::FromArgb(40, 40, 60)
-    $fontCombo.ForeColor      = $fgText
-    $fontCombo.FlatStyle      = 'Flat'
-
-    $fontList = @('Segoe UI Emoji', 'Segoe UI', 'Consolas', 'D2Coding', 'Malgun Gothic')
-    foreach ($fn in $fontList) {
-        $fontCombo.Items.Add($fn) | Out-Null
-    }
-    $currentIdx = $fontList.IndexOf($settings.fontName)
-    if ($currentIdx -ge 0) { $fontCombo.SelectedIndex = $currentIdx } else { $fontCombo.SelectedIndex = 0 }
-
-    $fontCombo.Add_SelectedIndexChanged({
-        $textBox.Font = New-Object System.Drawing.Font($fontCombo.SelectedItem.ToString(), $settings.fontSize)
-    })
-    $dlg.Controls.Add($fontCombo)
-    $yPos += 35
-
-    # Opacity slider
-    $opLbl = New-Object System.Windows.Forms.Label
-    $opLbl.Text      = 'Opacity'
-    $opLbl.Location  = New-Object System.Drawing.Point(20, ($yPos + 5))
-    $opLbl.AutoSize  = $true
-    $opLbl.ForeColor = $fgText
-    $opLbl.Font      = $dlgFont
-    $dlg.Controls.Add($opLbl)
-
-    $opVal = New-Object System.Windows.Forms.Label
-    $opVal.Text      = [string][int]($form.Opacity * 100) + '%'
-    $opVal.Location  = New-Object System.Drawing.Point(340, ($yPos + 5))
-    $opVal.AutoSize  = $true
-    $opVal.ForeColor = $accent
-    $opVal.Font      = $dlgFontSm
-    $dlg.Controls.Add($opVal)
-
-    $opSlider = New-Object System.Windows.Forms.TrackBar
-    $opSlider.Location  = New-Object System.Drawing.Point(100, $yPos)
-    $opSlider.Size      = New-Object System.Drawing.Size(235, 30)
-    $opSlider.Minimum   = 30
-    $opSlider.Maximum   = 100
-    $opSlider.Value     = [int]($form.Opacity * 100)
-    $opSlider.TickFrequency = 10
-    $opSlider.BackColor = $bgDark
-    $opSlider.Add_Scroll({
-        $form.Opacity = $opSlider.Value / 100.0
-        $opVal.Text = "$($opSlider.Value)%"
-    })
-    $dlg.Controls.Add($opSlider)
-    $yPos += 45
-
-    # Save button
-    $btnSave = New-Object System.Windows.Forms.Button
-    $btnSave.Text      = 'Save'
-    $btnSave.Size      = New-Object System.Drawing.Size(80, 30)
-    $btnSave.Location  = New-Object System.Drawing.Point(200, ($yPos + 5))
-    $btnSave.FlatStyle = 'Flat'
-    $btnSave.BackColor = $accent
-    $btnSave.ForeColor = [System.Drawing.Color]::White
-    $btnSave.Font      = $dlgFontSm
-    $btnSave.FlatAppearance.BorderSize = 0
-
-    $btnCancel = New-Object System.Windows.Forms.Button
-    $btnCancel.Text      = 'Cancel'
-    $btnCancel.Size      = New-Object System.Drawing.Size(80, 30)
-    $btnCancel.Location  = New-Object System.Drawing.Point(290, ($yPos + 5))
-    $btnCancel.FlatStyle = 'Flat'
-    $btnCancel.BackColor = $btnOff
-    $btnCancel.ForeColor = $btnOffTxt
-    $btnCancel.Font      = $dlgFontSm
-    $btnCancel.FlatAppearance.BorderSize = 0
-
-    $btnSave.Add_Click({
-        # Update hotkey name
-        $script:hotkeyName = $hkFields['hotkey'].Text
-        $settings.hkToggleClear = $hkFields['hkToggleClear'].Text
-        $settings.hkToggleEnter = $hkFields['hkToggleEnter'].Text
-
-        RegisterAllHotkeys
-        SaveSettings
-        $dlg.Close()
-    })
-
-    $btnCancel.Add_Click({ $dlg.Close() })
-
-    $dlg.Controls.AddRange(@($btnSave, $btnCancel))
-    $dlg.ActiveControl = $opSlider
-    $dlg.ShowDialog($form) | Out-Null
+    $s | ConvertTo-Json | Set-Content $settingsPath -Encoding UTF8
 }
 
-function ParseHotkey([string]$name) {
-    if (-not $name) { return $null }
-    $parts = $name -split '\+'
-    [uint32]$mod = 0; $vkName = ''
-    foreach ($p in $parts) {
-        switch ($p.Trim()) {
-            'Ctrl'  { $mod = $mod -bor 0x0002 }
-            'Alt'   { $mod = $mod -bor 0x0001 }
-            'Shift' { $mod = $mod -bor 0x0004 }
-            default { $vkName = $p.Trim() }
-        }
-    }
-    if (-not $vkName) { return $null }
-    try {
-        $vk = [System.Windows.Forms.Keys]::$vkName
-        return @{ mod = $mod; vk = [uint32]$vk }
-    } catch { return $null }
-}
-
-# ── Top status ──
-$label = New-Object System.Windows.Forms.Label
-$label.Text      = "Ctrl+``  show/hide  |  Enter  send  |  Shift+Enter  newline  |  Drop .md .txt"
-$label.Dock      = 'Top'
-$label.Height    = 20
-$label.ForeColor = $fgDim
-$label.BackColor = $bgDark
-$label.Font      = New-Object System.Drawing.Font('Segoe UI', 8.5)
-$label.Padding   = New-Object System.Windows.Forms.Padding(8, 3, 0, 0)
-
-# ── Text input (WinForms RichTextBox = native IME support) ──
-$textBox = New-Object System.Windows.Forms.RichTextBox
-$textBox.Dock             = 'Fill'
-$textBox.Font             = New-Object System.Drawing.Font($settings.fontName, $settings.fontSize)
-$textBox.BackColor        = $bgInput
-$textBox.ForeColor        = $fgText
-$textBox.BorderStyle      = 'None'
-$textBox.ScrollBars       = 'Vertical'
-$textBox.AcceptsTab       = $false
-$textBox.DetectUrls       = $false
-$textBox.ShortcutsEnabled = $true
-$textBox.AllowDrop        = $true
-$textBox.EnableAutoDragDrop = $false
-
-$form.Controls.Add($textBox)
-$form.Controls.Add($label)
-$form.Controls.Add($optPanel)
-
-# ── File drag & drop ──
+# ── File Drop ──
 $textContentExts = @('.md', '.txt')
 
-$textBox.Add_DragEnter({
+$tbInput.Add_PreviewDragOver({
     param($sender, $e)
-    if ($e.Data.GetDataPresent([System.Windows.Forms.DataFormats]::FileDrop)) {
-        $files = $e.Data.GetData([System.Windows.Forms.DataFormats]::FileDrop)
-        if ($chkPath.Checked) {
-            # Path mode: accept any file
-            $e.Effect = [System.Windows.Forms.DragDropEffects]::Copy
-        } else {
-            # Content mode: .md/.txt only
-            $hasValid = $false
-            foreach ($f in $files) {
-                if ($textContentExts -contains [System.IO.Path]::GetExtension($f).ToLower()) {
-                    $hasValid = $true; break
-                }
-            }
-            if ($hasValid) {
-                $e.Effect = [System.Windows.Forms.DragDropEffects]::Copy
+    $e.Handled = $true
+    if ($e.Data.GetDataPresent([System.Windows.DataFormats]::FileDrop)) {
+        $e.Effects = [System.Windows.DragDropEffects]::Copy
+    } else {
+        $e.Effects = [System.Windows.DragDropEffects]::None
+    }
+})
+
+$tbInput.Add_Drop({
+    param($sender, $e)
+    if ($e.Data.GetDataPresent([System.Windows.DataFormats]::FileDrop)) {
+        $files = $e.Data.GetData([System.Windows.DataFormats]::FileDrop)
+        foreach ($f in $files) {
+            $ext = [System.IO.Path]::GetExtension($f).ToLower()
+            $fileName = [System.IO.Path]::GetFileName($f)
+            if ($chkPath.IsChecked) {
+                $insert = $f
+            } elseif ($textContentExts -contains $ext) {
+                $content = [System.IO.File]::ReadAllText($f, [System.Text.Encoding]::UTF8)
+                $insert = "[$fileName]`r`n$content"
             } else {
-                $e.Effect = [System.Windows.Forms.DragDropEffects]::None
+                continue
             }
+            $pos = $tbInput.CaretIndex
+            $tbInput.Text = $tbInput.Text.Insert($pos, $insert)
+            $tbInput.CaretIndex = $pos + $insert.Length
         }
     }
 })
 
-$textBox.Add_DragDrop({
+# ── Ctrl+Wheel Font Size ──
+$tbInput.Add_PreviewMouseWheel({
     param($sender, $e)
-    $files = $e.Data.GetData([System.Windows.Forms.DataFormats]::FileDrop)
-    foreach ($f in $files) {
-        $ext = [System.IO.Path]::GetExtension($f).ToLower()
-        $fileName = [System.IO.Path]::GetFileName($f)
-        if ($chkPath.Checked) {
-            # Path mode: any file → insert path
-            $insert = $f
-        } elseif ($textContentExts -contains $ext) {
-            # Content mode: .md/.txt → insert content
-            $content = [System.IO.File]::ReadAllText($f, [System.Text.Encoding]::UTF8)
-            $insert = "[$fileName]`r`n$content"
-        } else {
-            continue
-        }
-        $pos = $textBox.SelectionStart
-        $textBox.Text = $textBox.Text.Insert($pos, $insert)
-        $textBox.SelectionStart = $pos + $insert.Length
+    if ([System.Windows.Input.Keyboard]::Modifiers -eq [System.Windows.Input.ModifierKeys]::Control) {
+        $e.Handled = $true
+        $sz = $tbInput.FontSize
+        if ($e.Delta -gt 0) { $sz += 1 } else { $sz -= 1 }
+        if ($sz -lt 8) { $sz = 8 }
+        if ($sz -gt 36) { $sz = 36 }
+        $tbInput.FontSize = $sz
     }
-    $textBox.Focus()
 })
 
-# ── Target window tracking (200ms poll) ──
-$trackTimer = New-Object System.Windows.Forms.Timer
-$trackTimer.Interval = 200
+# ── Target tracking (DispatcherTimer) ──
+$trackTimer = New-Object System.Windows.Threading.DispatcherTimer
+$trackTimer.Interval = [TimeSpan]::FromMilliseconds(200)
 $trackTimer.Add_Tick({
     $hwnd = [Fling.W32]::GetForegroundWindow()
-    if ($hwnd -ne [IntPtr]::Zero -and $hwnd -ne $script:formHwnd) {
+    $myHwnd = (New-Object System.Windows.Interop.WindowInteropHelper($window)).Handle
+    if ($hwnd -ne [IntPtr]::Zero -and $hwnd -ne $myHwnd) {
         $script:targetHwnd = $hwnd
         $hint = GetTargetHint $hwnd
-        $label.Text = "-> $hint"
+        $lblTarget.Text = [char]0x2192 + " $hint"
     }
 })
 
-# ── Send timer (async paste + enter + refocus) ──
-$sendTimer = New-Object System.Windows.Forms.Timer
-$sendTimer.Interval = 150
+# ── Send timers ──
+$sendTimer = New-Object System.Windows.Threading.DispatcherTimer
+$sendTimer.Interval = [TimeSpan]::FromMilliseconds(150)
 $sendTimer.Add_Tick({
     $sendTimer.Stop()
     switch ($script:sendStep) {
         'paste' {
             SendCtrlV
-            if ($chkEnter.Checked) {
+            if ($chkEnter.IsChecked) {
                 $script:sendStep = 'enter'
-                $sendTimer.Interval = 250
+                $sendTimer.Interval = [TimeSpan]::FromMilliseconds(250)
                 $sendTimer.Start()
             } else {
                 $script:sendStep = 'refocus'
-                $sendTimer.Interval = 40
+                $sendTimer.Interval = [TimeSpan]::FromMilliseconds(40)
                 $sendTimer.Start()
             }
         }
         'enter' {
             SendEnterKey
             $script:sendStep = 'refocus'
-            $sendTimer.Interval = 40
+            $sendTimer.Interval = [TimeSpan]::FromMilliseconds(40)
             $sendTimer.Start()
         }
         'refocus' {
             if ($script:oldClipText) {
-                try { [System.Windows.Forms.Clipboard]::SetText($script:oldClipText) } catch {}
+                try { [System.Windows.Clipboard]::SetText($script:oldClipText) } catch {}
                 $script:oldClipText = $null
             }
-            $form.Activate()
-            $textBox.Focus()
+            $window.Activate()
+            $tbInput.Focus()
             $script:sendStep = 'idle'
-            $sendTimer.Interval = 150
+            $sendTimer.Interval = [TimeSpan]::FromMilliseconds(150)
         }
     }
 })
 
 # ── Send function ──
 function DoSend {
-    $text = $textBox.Text.TrimEnd("`r", "`n")
+    $text = $tbInput.Text.TrimEnd("`r", "`n")
     if ([string]::IsNullOrWhiteSpace($text)) {
-        $textBox.Clear()
+        $tbInput.Clear()
         return
     }
     if ($script:sendStep -ne 'idle') { return }
 
     # Clipboard backup
     $script:oldClipText = $null
-    if ([System.Windows.Forms.Clipboard]::ContainsText()) {
-        $script:oldClipText = [System.Windows.Forms.Clipboard]::GetText()
+    if ([System.Windows.Clipboard]::ContainsText()) {
+        $script:oldClipText = [System.Windows.Clipboard]::GetText()
     }
-    [System.Windows.Forms.Clipboard]::SetText($text)
+    [System.Windows.Clipboard]::SetText($text)
 
-    if ($chkClear.Checked) {
-        # SelectAll + Delete = undoable (Ctrl+Z)
-        $textBox.SelectAll()
-        $textBox.SelectedText = ''
+    if ($chkClear.IsChecked) {
+        $tbInput.SelectAll()
+        $tbInput.SelectedText = ''
     } else {
-        # Remove trailing newline from Enter key
-        $textBox.Text = $text
-        $textBox.SelectionStart = $textBox.Text.Length
+        $tbInput.Text = $text
+        $tbInput.CaretIndex = $tbInput.Text.Length
     }
 
     if ($script:targetHwnd -ne [IntPtr]::Zero) {
@@ -606,47 +419,31 @@ function DoSend {
 }
 
 # ── Key events ──
-$textBox.Add_KeyDown({
+$tbInput.Add_PreviewKeyDown({
     param($sender, $e)
-    if ($e.KeyCode -eq [System.Windows.Forms.Keys]::Return -and -not $e.Shift) {
-        $e.SuppressKeyPress = $true
+    # Enter = send (Shift+Enter = newline via AcceptsReturn)
+    if ($e.Key -eq [System.Windows.Input.Key]::Return -and
+        [System.Windows.Input.Keyboard]::Modifiers -ne [System.Windows.Input.ModifierKeys]::Shift) {
+        $e.Handled = $true
+        DoSend
     }
     # Force plain text paste
-    if ($e.Control -and $e.KeyCode -eq [System.Windows.Forms.Keys]::V) {
-        $e.SuppressKeyPress = $true
-        if ([System.Windows.Forms.Clipboard]::ContainsText()) {
-            $textBox.SelectedText = [System.Windows.Forms.Clipboard]::GetText()
+    if ($e.Key -eq [System.Windows.Input.Key]::V -and
+        [System.Windows.Input.Keyboard]::Modifiers -eq [System.Windows.Input.ModifierKeys]::Control) {
+        $e.Handled = $true
+        if ([System.Windows.Clipboard]::ContainsText()) {
+            $tbInput.SelectedText = [System.Windows.Clipboard]::GetText()
+            $tbInput.CaretIndex = $tbInput.SelectionStart + $tbInput.SelectionLength
+            $tbInput.SelectionLength = 0
         }
     }
 })
-$textBox.Add_KeyUp({
-    param($sender, $e)
-    if ($e.KeyCode -eq [System.Windows.Forms.Keys]::Return -and -not $e.Shift) {
-        DoSend
-    }
-})
 
-# ── Global hotkey (Ctrl+`) ──
+# ── Global Hotkey ──
 $HK_SHOWHIDE     = 9001
 $HK_TOGGLE_CLEAR = 9002
 $HK_TOGGLE_ENTER = 9003
 
-# Custom WndProc to catch WM_HOTKEY
-$hotkeyForm = New-Object System.Windows.Forms.Form
-$hotkeyForm.ShowInTaskbar = $false
-$hotkeyForm.WindowState = 'Minimized'
-$hotkeyForm.FormBorderStyle = 'None'
-$hotkeyForm.Size = New-Object System.Drawing.Size(0, 0)
-$hotkeyForm.Opacity = 0
-
-$hotkeyTimer = New-Object System.Windows.Forms.Timer
-$hotkeyTimer.Interval = 50
-$hotkeyTimer.Add_Tick({
-    # Poll approach for hotkey: check if hotkey message is pending
-    # (RegisterHotKey posts WM_HOTKEY to the registering thread's message queue)
-})
-
-# Use a NativeWindow subclass for WM_HOTKEY
 Add-Type @'
 using System;
 using System.Windows.Forms;
@@ -672,53 +469,242 @@ public class HotkeyWindow : NativeWindow {
 
 $hkWin = New-Object HotkeyWindow
 $hkWin.Add_HotkeyPressed({
-    switch ($hkWin.LastHotkeyId) {
-        $HK_SHOWHIDE {
-            if ($form.Visible -and $form.ContainsFocus) {
-                $form.Hide()
-            } else {
-                $form.Show()
-                $form.Activate()
-                $textBox.Focus()
+    $window.Dispatcher.Invoke({
+        switch ($hkWin.LastHotkeyId) {
+            $HK_SHOWHIDE {
+                if ($window.IsVisible -and $window.IsActive) {
+                    $window.Hide()
+                } else {
+                    $window.Show()
+                    $window.Activate()
+                    $tbInput.Focus()
+                }
+            }
+            $HK_TOGGLE_CLEAR {
+                $chkClear.IsChecked = -not $chkClear.IsChecked
+            }
+            $HK_TOGGLE_ENTER {
+                $chkEnter.IsChecked = -not $chkEnter.IsChecked
             }
         }
-        $HK_TOGGLE_CLEAR {
-            $chkClear.Checked = -not $chkClear.Checked
-        }
-        $HK_TOGGLE_ENTER {
-            $chkEnter.Checked = -not $chkEnter.Checked
-        }
-    }
+    })
 })
 
+function ParseHotkey([string]$name) {
+    if (-not $name) { return $null }
+    $parts = $name -split '\+'
+    [uint32]$mod = 0; $vkName = ''
+    foreach ($p in $parts) {
+        switch ($p.Trim()) {
+            'Ctrl'  { $mod = $mod -bor 0x0002 }
+            'Alt'   { $mod = $mod -bor 0x0001 }
+            'Shift' { $mod = $mod -bor 0x0004 }
+            default { $vkName = $p.Trim() }
+        }
+    }
+    if (-not $vkName) { return $null }
+    try {
+        $vk = [System.Windows.Forms.Keys]::$vkName
+        return @{ mod = $mod; vk = [uint32]$vk }
+    } catch { return $null }
+}
+
 function RegisterAllHotkeys {
-    # Unregister all first
     [Fling.W32]::UnregisterHotKey($hkWin.Handle, $HK_SHOWHIDE) | Out-Null
     [Fling.W32]::UnregisterHotKey($hkWin.Handle, $HK_TOGGLE_CLEAR) | Out-Null
     [Fling.W32]::UnregisterHotKey($hkWin.Handle, $HK_TOGGLE_ENTER) | Out-Null
 
-    # Show/Hide
     $p = ParseHotkey $script:hotkeyName
     if ($p) { [Fling.W32]::RegisterHotKey($hkWin.Handle, $HK_SHOWHIDE, $p.mod, $p.vk) | Out-Null }
-
-    # Toggle Clear
     $p = ParseHotkey $settings.hkToggleClear
     if ($p) { [Fling.W32]::RegisterHotKey($hkWin.Handle, $HK_TOGGLE_CLEAR, $p.mod, $p.vk) | Out-Null }
-
-    # Toggle Auto Enter
     $p = ParseHotkey $settings.hkToggleEnter
     if ($p) { [Fling.W32]::RegisterHotKey($hkWin.Handle, $HK_TOGGLE_ENTER, $p.mod, $p.vk) | Out-Null }
 }
 
+# ── Gear button → settings ──
+$btnGear.Add_Click({
+    $dlg = New-Object System.Windows.Window
+    $dlg.Title = 'Fling Settings'
+    $dlg.Width = 400; $dlg.Height = 350
+    $dlg.WindowStyle = 'ToolWindow'
+    $dlg.Background = [System.Windows.Media.BrushConverter]::new().ConvertFrom('#1e1e2e')
+    $dlg.Topmost = $true
+    $dlg.WindowStartupLocation = 'CenterOwner'
+    $dlg.Owner = $window
+
+    $grid = New-Object System.Windows.Controls.Grid
+    $dlg.Content = $grid
+
+    $sp = New-Object System.Windows.Controls.StackPanel
+    $sp.Margin = New-Object System.Windows.Thickness(20, 15, 20, 15)
+    $grid.Children.Add($sp) | Out-Null
+
+    $fgBrush   = [System.Windows.Media.BrushConverter]::new().ConvertFrom('#cdd6f4')
+    $dimBrush  = [System.Windows.Media.BrushConverter]::new().ConvertFrom('#646478')
+    $acBrush   = [System.Windows.Media.BrushConverter]::new().ConvertFrom('#10b981')
+    $hkBgBrush = [System.Windows.Media.BrushConverter]::new().ConvertFrom('#28283c')
+
+    # Hotkey rows
+    $hotkeyDefs = @(
+        @{ label = 'Show / Hide';       key = 'hotkey';        current = $script:hotkeyName }
+        @{ label = 'Toggle Clear';      key = 'hkToggleClear'; current = if ($settings.hkToggleClear) { $settings.hkToggleClear } else { '' } }
+        @{ label = 'Toggle Auto Enter'; key = 'hkToggleEnter'; current = if ($settings.hkToggleEnter) { $settings.hkToggleEnter } else { '' } }
+    )
+    $hkFields = @{}
+
+    foreach ($def in $hotkeyDefs) {
+        $row = New-Object System.Windows.Controls.DockPanel
+        $row.Margin = New-Object System.Windows.Thickness(0, 0, 0, 8)
+
+        $lbl = New-Object System.Windows.Controls.TextBlock
+        $lbl.Text = $def.label
+        $lbl.Foreground = $fgBrush
+        $lbl.FontSize = 13
+        $lbl.Width = 140
+        $lbl.VerticalAlignment = 'Center'
+        [System.Windows.Controls.DockPanel]::SetDock($lbl, 'Left')
+
+        $tb = New-Object System.Windows.Controls.TextBox
+        $tb.Text = $def.current
+        $tb.IsReadOnly = $true
+        $tb.FontSize = 12
+        $tb.Background = $hkBgBrush
+        $tb.Foreground = $acBrush
+        $tb.BorderThickness = New-Object System.Windows.Thickness(0)
+        $tb.TextAlignment = 'Center'
+        $tb.Padding = New-Object System.Windows.Thickness(4)
+        $tb.Cursor = [System.Windows.Input.Cursors]::Hand
+        $tb.Tag = $def.key
+
+        $tb.Add_GotFocus({
+            param($s, $ev)
+            $s.Text = 'Press keys...'
+            $s.Foreground = [System.Windows.Media.BrushConverter]::new().ConvertFrom('#ffc832')
+        })
+
+        $tb.Add_PreviewKeyDown({
+            param($s, $e)
+            $e.Handled = $true
+            $parts = @()
+            if ([System.Windows.Input.Keyboard]::Modifiers -band [System.Windows.Input.ModifierKeys]::Control) { $parts += 'Ctrl' }
+            if ([System.Windows.Input.Keyboard]::Modifiers -band [System.Windows.Input.ModifierKeys]::Alt)     { $parts += 'Alt' }
+            if ([System.Windows.Input.Keyboard]::Modifiers -band [System.Windows.Input.ModifierKeys]::Shift)   { $parts += 'Shift' }
+            $keyName = $e.Key.ToString()
+            if ($keyName -eq 'System') { $keyName = $e.SystemKey.ToString() }
+            if ($keyName -in @('LeftCtrl','RightCtrl','LeftAlt','RightAlt','LeftShift','RightShift')) { return }
+            $parts += $keyName
+            $s.Text = ($parts -join '+')
+            $s.Foreground = [System.Windows.Media.BrushConverter]::new().ConvertFrom('#10b981')
+            [System.Windows.Input.Keyboard]::ClearFocus()
+        })
+
+        $tb.Add_PreviewMouseRightButtonDown({
+            param($s, $e)
+            $s.Text = ''
+            $s.Foreground = [System.Windows.Media.BrushConverter]::new().ConvertFrom('#10b981')
+        })
+
+        $row.Children.Add($lbl) | Out-Null
+        $row.Children.Add($tb) | Out-Null
+        $sp.Children.Add($row) | Out-Null
+        $hkFields[$def.key] = $tb
+    }
+
+    # Hint
+    $hint = New-Object System.Windows.Controls.TextBlock
+    $hint.Text = 'Click field + press keys  |  Right-click to clear  |  Ctrl+Wheel: font size'
+    $hint.Foreground = $dimBrush
+    $hint.FontSize = 10
+    $hint.Margin = New-Object System.Windows.Thickness(0, 5, 0, 12)
+    $sp.Children.Add($hint) | Out-Null
+
+    # Opacity
+    $opRow = New-Object System.Windows.Controls.DockPanel
+    $opRow.Margin = New-Object System.Windows.Thickness(0, 0, 0, 8)
+
+    $opLbl = New-Object System.Windows.Controls.TextBlock
+    $opLbl.Text = 'Opacity'
+    $opLbl.Foreground = $fgBrush
+    $opLbl.FontSize = 13
+    $opLbl.Width = 70
+    $opLbl.VerticalAlignment = 'Center'
+    [System.Windows.Controls.DockPanel]::SetDock($opLbl, 'Left')
+
+    $opVal = New-Object System.Windows.Controls.TextBlock
+    $opVal.Text = [string][int]($bgBorder.Opacity * 100) + '%'
+    $opVal.Foreground = $acBrush
+    $opVal.FontSize = 12
+    $opVal.Width = 40
+    $opVal.TextAlignment = 'Right'
+    $opVal.VerticalAlignment = 'Center'
+    [System.Windows.Controls.DockPanel]::SetDock($opVal, 'Right')
+
+    $opSlider = New-Object System.Windows.Controls.Slider
+    $opSlider.Minimum = 30
+    $opSlider.Maximum = 100
+    $opSlider.Value = [int]($bgBorder.Opacity * 100)
+    $opSlider.TickFrequency = 10
+    $opSlider.IsSnapToTickEnabled = $false
+    $opSlider.VerticalAlignment = 'Center'
+    $opSlider.Add_ValueChanged({
+        $bgBorder.Opacity = $opSlider.Value / 100.0
+        $opVal.Text = [string][int]$opSlider.Value + '%'
+    })
+
+    $opRow.Children.Add($opLbl) | Out-Null
+    $opRow.Children.Add($opVal) | Out-Null
+    $opRow.Children.Add($opSlider) | Out-Null
+    $sp.Children.Add($opRow) | Out-Null
+
+    # Buttons
+    $btnRow = New-Object System.Windows.Controls.StackPanel
+    $btnRow.Orientation = 'Horizontal'
+    $btnRow.HorizontalAlignment = 'Right'
+    $btnRow.Margin = New-Object System.Windows.Thickness(0, 15, 0, 0)
+
+    $btnSave = New-Object System.Windows.Controls.Button
+    $btnSave.Content = 'Save'
+    $btnSave.Width = 80; $btnSave.Height = 30
+    $btnSave.Background = $acBrush
+    $btnSave.Foreground = [System.Windows.Media.Brushes]::White
+    $btnSave.BorderThickness = New-Object System.Windows.Thickness(0)
+    $btnSave.Margin = New-Object System.Windows.Thickness(0, 0, 8, 0)
+    $btnSave.Cursor = [System.Windows.Input.Cursors]::Hand
+
+    $btnSave.Add_Click({
+        $script:hotkeyName = $hkFields['hotkey'].Text
+        $settings.hkToggleClear = $hkFields['hkToggleClear'].Text
+        $settings.hkToggleEnter = $hkFields['hkToggleEnter'].Text
+        RegisterAllHotkeys
+        SaveSettings
+        $dlg.Close()
+    })
+
+    $btnCancel = New-Object System.Windows.Controls.Button
+    $btnCancel.Content = 'Cancel'
+    $btnCancel.Width = 80; $btnCancel.Height = 30
+    $btnCancel.Background = [System.Windows.Media.BrushConverter]::new().ConvertFrom('#2d2d41')
+    $btnCancel.Foreground = [System.Windows.Media.BrushConverter]::new().ConvertFrom('#78788c')
+    $btnCancel.BorderThickness = New-Object System.Windows.Thickness(0)
+    $btnCancel.Cursor = [System.Windows.Input.Cursors]::Hand
+    $btnCancel.Add_Click({ $dlg.Close() })
+
+    $btnRow.Children.Add($btnSave) | Out-Null
+    $btnRow.Children.Add($btnCancel) | Out-Null
+    $sp.Children.Add($btnRow) | Out-Null
+
+    $dlg.ShowDialog() | Out-Null
+})
+
 # ── Start ──
-$form.Add_Shown({
-    $script:formHwnd = $form.Handle
+$window.Add_Loaded({
     $trackTimer.Start()
-    $textBox.Focus()
+    $tbInput.Focus()
     RegisterAllHotkeys
 })
 
-$form.Add_FormClosing({
+$window.Add_Closing({
     SaveSettings
     [Fling.W32]::UnregisterHotKey($hkWin.Handle, $HK_SHOWHIDE) | Out-Null
     [Fling.W32]::UnregisterHotKey($hkWin.Handle, $HK_TOGGLE_CLEAR) | Out-Null
@@ -727,4 +713,7 @@ $form.Add_FormClosing({
     $sendTimer.Stop()
 })
 
-[System.Windows.Forms.Application]::Run($form)
+$app = New-Object System.Windows.Application
+$app.ShutdownMode = 'OnExplicitShutdown'
+$window.Add_Closed({ $app.Shutdown() })
+$app.Run($window) | Out-Null
