@@ -576,6 +576,13 @@ $textBox.Add_KeyDown({
     if ($e.KeyCode -eq [System.Windows.Forms.Keys]::Return -and -not $e.Shift) {
         $e.SuppressKeyPress = $true
     }
+    # Force plain text paste (prevent RTF formatting from changing font)
+    if ($e.Control -and $e.KeyCode -eq [System.Windows.Forms.Keys]::V) {
+        $e.SuppressKeyPress = $true
+        if ([System.Windows.Forms.Clipboard]::ContainsText()) {
+            $textBox.SelectedText = [System.Windows.Forms.Clipboard]::GetText()
+        }
+    }
 })
 $textBox.Add_KeyUp({
     param($sender, $e)
