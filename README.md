@@ -33,12 +33,35 @@ This isn't a specific terminal's bug — it's a fundamental conflict between cel
 3. Press **Enter** → text is pasted + submitted to the last active window
 4. Focus returns to Fling automatically
 
+## Multi-LLM / Multi-CLI Workflow
+
+Modern AI workflows involve juggling multiple windows — Claude Code in one terminal, ChatGPT in a browser tab, Copilot in another. Fling becomes a **single input hub** for all of them:
+
+```
+┌──────────────┐  ┌──────────────┐  ┌──────────────┐
+│ Claude Code  │  │   ChatGPT    │  │  Copilot CLI  │
+│  (terminal)  │  │  (browser)   │  │  (terminal)   │
+└──────┬───────┘  └──────┬───────┘  └──────┬───────┘
+       │                 │                 │
+       └────────── Fling ──────────────────┘
+              (write once, send anywhere)
+```
+
+- **Click any window** → it becomes the send target (shown in Fling's status bar)
+- **Type your prompt** in Fling with perfect IME
+- **Enter** → sent. Fling is ready for the next one.
+- **Drag a file** → attach context to your prompt before sending
+
+No copy-paste juggling. No switching keyboard focus back and forth. Just type and fling.
+
 ## Features
 
 | Feature | Description |
 |---------|-------------|
 | **Native IME** | WinForms RichTextBox — same engine as Notepad |
-| **Send anywhere** | Pastes to whatever window was last active |
+| **Send anywhere** | Pastes to whatever window was last active — terminals, browsers, LLM UIs |
+| **Target hint** | Status bar shows where text will go (e.g., `→ WindowsTerminal (Claude Code)`) |
+| **Global hotkey** | `Ctrl+`` to show/hide from anywhere. Customizable in settings |
 | **Auto Enter** | Optionally sends Enter after paste (toggle) |
 | **Clear after send** | Optionally clears input (Ctrl+Z to undo) |
 | **File drop** | Drag `.md` / `.txt` files to insert content or path |
