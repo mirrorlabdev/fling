@@ -64,8 +64,13 @@ No copy-paste juggling. No switching keyboard focus back and forth. Just type an
 | **Global hotkey** | `Ctrl+`` to show/hide from anywhere. Customizable in settings |
 | **Auto Enter** | Optionally sends Enter after paste (toggle) |
 | **Clear after send** | Optionally clears input (Ctrl+Z to undo) |
-| **File drop** | Drag `.md` / `.txt` files to insert content or path |
+| **File drop** | Drag `.md`/`.txt` to insert content, or **any file** to insert path |
 | **Clipboard safe** | Backs up and restores your clipboard |
+| **Opacity** | Adjustable transparency (30–100%) via settings |
+| **Always on top** | Toggle on/off from the bottom bar |
+| **Ctrl+Wheel zoom** | Native font size control (RichTextBox built-in) |
+| **Remember layout** | Window position, size, and all settings persist across sessions |
+| **Settings (⚙)** | Customize hotkeys, opacity — gear button in bottom-right |
 | **Dark theme** | Easy on the eyes |
 | **Zero install** | Pure PowerShell — no dependencies |
 
@@ -98,7 +103,9 @@ Then right-click the shortcut → **Pin to taskbar**.
 | `Shift+Enter` | New line |
 | `Ctrl+Z` | Undo (works even after clear) |
 | `Ctrl+A` | Select all |
-| Drag `.md`/`.txt` | Insert file content (or path if toggled) |
+| `Ctrl+Wheel` | Font size zoom |
+| Drag `.md`/`.txt` | Insert file content |
+| Drag any file (path mode) | Insert file path |
 
 ## Toggle Options
 
@@ -106,7 +113,21 @@ Then right-click the shortcut → **Pin to taskbar**.
 |--------|---------|-------------|
 | **Clear after send** | ON | Clears input after sending. Ctrl+Z to undo |
 | **Auto Enter** | ON | Sends Enter key after paste. Turn off to just paste |
-| **File: path only** | OFF | When ON, dropped files insert path instead of content |
+| **File: path only** | OFF | When ON, dropped files insert path instead of content (accepts all file types) |
+| **Always on top** | ON | Keep Fling above other windows |
+
+## Settings (⚙)
+
+Click the gear icon in the bottom-right corner to open settings:
+
+| Setting | Description |
+|---------|-------------|
+| **Show / Hide hotkey** | Global hotkey to toggle Fling (default: `Ctrl+``) |
+| **Toggle Clear hotkey** | Global hotkey to toggle "Clear after send" |
+| **Toggle Auto Enter hotkey** | Global hotkey to toggle "Auto Enter" |
+| **Opacity** | Window transparency slider (30–100%) with live preview |
+
+All settings are saved to `fling-settings.json` next to the script.
 
 ## Timing
 
