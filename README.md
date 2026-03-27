@@ -1,0 +1,118 @@
+# Fling
+
+**Floating Input Sender for CLI & LLM**
+
+*Write once, send anywhere.*
+
+Fling is a tiny always-on-top input pad that solves **broken IME composition in terminals**. Type CJK (Korean, Japanese, Chinese) text naturally, then fling it to any window — terminals, browsers, LLM chat UIs, anything.
+
+## The Problem
+
+Every terminal on Windows mangles CJK input:
+- Characters break during composition
+- Editing mid-sentence corrupts surrounding text
+- Cursor movement causes rendering glitches
+
+This isn't a specific terminal's bug — it's a fundamental conflict between cell-based terminal grids and IME composition. No terminal has fixed it. **Fling sidesteps the problem entirely.**
+
+## How It Works
+
+```
+┌─────────────────────────┐
+│  Any app (terminal,     │  ← reads output here
+│  browser, LLM UI...)    │
+└─────────────────────────┘
+┌─────────────────────────┐
+│  Fling                  │  ← type here (perfect IME)
+│  Enter → sends text ↑   │
+└─────────────────────────┘
+```
+
+1. Fling floats on top as a small input window
+2. Type freely with full native IME support
+3. Press **Enter** → text is pasted + submitted to the last active window
+4. Focus returns to Fling automatically
+
+## Features
+
+| Feature | Description |
+|---------|-------------|
+| **Native IME** | WinForms RichTextBox — same engine as Notepad |
+| **Send anywhere** | Pastes to whatever window was last active |
+| **Auto Enter** | Optionally sends Enter after paste (toggle) |
+| **Clear after send** | Optionally clears input (Ctrl+Z to undo) |
+| **File drop** | Drag `.md` / `.txt` files to insert content or path |
+| **Clipboard safe** | Backs up and restores your clipboard |
+| **Dark theme** | Easy on the eyes |
+| **Zero install** | Pure PowerShell — no dependencies |
+
+## Quick Start
+
+### Run directly
+
+```powershell
+powershell -ExecutionPolicy Bypass -File fling.ps1
+```
+
+### Create a shortcut (pin to taskbar)
+
+```powershell
+$ws = New-Object -ComObject WScript.Shell
+$sc = $ws.CreateShortcut("$HOME\Desktop\Fling.lnk")
+$sc.TargetPath = 'powershell.exe'
+$sc.Arguments = '-ExecutionPolicy Bypass -WindowStyle Hidden -File "C:\path\to\fling.ps1"'
+$sc.WindowStyle = 7
+$sc.Save()
+```
+
+Then right-click the shortcut → **Pin to taskbar**.
+
+## Controls
+
+| Key | Action |
+|-----|--------|
+| `Enter` | Send text to last active window |
+| `Shift+Enter` | New line |
+| `Ctrl+Z` | Undo (works even after clear) |
+| `Ctrl+A` | Select all |
+| Drag `.md`/`.txt` | Insert file content (or path if toggled) |
+
+## Toggle Options
+
+| Option | Default | Description |
+|--------|---------|-------------|
+| **Clear after send** | ON | Clears input after sending. Ctrl+Z to undo |
+| **Auto Enter** | ON | Sends Enter key after paste. Turn off to just paste |
+| **File: path only** | OFF | When ON, dropped files insert path instead of content |
+
+## Timing
+
+Fling uses carefully tuned delays for reliable delivery:
+
+| Step | Delay | Why |
+|------|-------|-----|
+| Focus → Paste | 150ms | Window needs time to become active |
+| Paste → Enter | 250ms | Terminal needs time to process paste |
+| Enter → Refocus | 40ms | Quick return to Fling |
+
+Total: ~440ms — feels instant, works reliably.
+
+## Requirements
+
+- Windows 10/11
+- PowerShell 5.1+ (pre-installed on Windows)
+- That's it. No Python, no Node, no install.
+
+## Who Is This For?
+
+- Developers who use **CLI tools** (Claude Code, GitHub Copilot CLI, etc.) and type in Korean/Japanese/Chinese
+- Anyone who talks to **LLMs in terminals** and is tired of broken IME
+- Power users who want a **universal paste pad** across any application
+
+## License
+
+MIT
+
+## Author
+
+[MirrorLab](https://github.com/mirrorlab-dev) — Built out of pure frustration with terminal IME, in one coding session with Claude Code.
