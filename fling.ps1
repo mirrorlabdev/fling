@@ -590,9 +590,14 @@ $btnGear.Add_Click({
             if ([System.Windows.Input.Keyboard]::Modifiers -band [System.Windows.Input.ModifierKeys]::Control) { $parts += 'Ctrl' }
             if ([System.Windows.Input.Keyboard]::Modifiers -band [System.Windows.Input.ModifierKeys]::Alt)     { $parts += 'Alt' }
             if ([System.Windows.Input.Keyboard]::Modifiers -band [System.Windows.Input.ModifierKeys]::Shift)   { $parts += 'Shift' }
-            $keyName = $e.Key.ToString()
-            if ($keyName -eq 'System') { $keyName = $e.SystemKey.ToString() }
-            if ($keyName -in @('LeftCtrl','RightCtrl','LeftAlt','RightAlt','LeftShift','RightShift')) { return }
+            $wpfKey = $e.Key
+            if ($wpfKey -eq [System.Windows.Input.Key]::System) { $wpfKey = $e.SystemKey }
+            if ($wpfKey -in @([System.Windows.Input.Key]::LeftCtrl, [System.Windows.Input.Key]::RightCtrl,
+                              [System.Windows.Input.Key]::LeftAlt, [System.Windows.Input.Key]::RightAlt,
+                              [System.Windows.Input.Key]::LeftShift, [System.Windows.Input.Key]::RightShift)) { return }
+            # WPF Key → VK → WinForms name (ParseHotkey 호환)
+            $vk = [System.Windows.Input.KeyInterop]::VirtualKeyFromKey($wpfKey)
+            $keyName = ([System.Windows.Forms.Keys]$vk).ToString()
             $parts += $keyName
             $s.Text = ($parts -join '+')
             $s.Foreground = [System.Windows.Media.BrushConverter]::new().ConvertFrom('#10b981')

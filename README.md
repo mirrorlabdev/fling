@@ -62,7 +62,7 @@ No copy-paste juggling. No switching keyboard focus back and forth. Just type an
 | Feature | Description |
 |---------|-------------|
 | **Native IME** | WPF TextBox with DirectWrite — perfect CJK composition |
-| **Emoji support** | Full color emoji rendering (DirectWrite font fallback) |
+| **Emoji support** | Emoji rendering via DirectWrite font fallback |
 | **Send anywhere** | Pastes to whatever window was last active — terminals, browsers, LLM UIs |
 | **Target hint** | Status bar shows where text will go (e.g., `→ WindowsTerminal (Claude Code)`) |
 | **Global hotkey** | `Ctrl+`` to show/hide from anywhere. Customizable in settings |
@@ -157,7 +157,7 @@ Fling v2 uses **WPF (Windows Presentation Foundation)** instead of WinForms:
 |---|---|---|
 | Text renderer | GDI | **DirectWrite** |
 | IME support | ✅ | ✅ |
-| Emoji | ❌ Squares | ✅ **Full color** |
+| Emoji | ❌ Squares | ✅ **Supported** |
 | Transparency | Whole window | **Background only** |
 | Window style | System chrome | **Custom borderless** |
 

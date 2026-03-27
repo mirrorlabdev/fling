@@ -1,10 +1,10 @@
 ﻿{
-    "y":  800,
+    "y":  445,
     "pathOnly":  true,
     "hotkey":  "Ctrl+Space",
-    "clearAfterSend":  true,
+    "clearAfterSend":  false,
     "hkToggleEnter":  "Ctrl+Alt+X",
-    "x":  824,
+    "x":  758,
     "topMost":  true,
     "opacity":  0.94349775784753365,
     "w":  819,
