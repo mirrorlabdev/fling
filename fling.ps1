@@ -81,6 +81,8 @@ $defaults = @{
     hkToggleClear = ''
     hkToggleEnter = ''
     opacity = 0.95
+    fontName = 'Segoe UI'
+    fontSize = 13
 }
 
 function LoadSettings {
@@ -109,6 +111,8 @@ function SaveSettings {
         hkToggleClear = $settings.hkToggleClear
         hkToggleEnter = $settings.hkToggleEnter
         opacity = $form.Opacity
+        fontName = $textBox.Font.FontFamily.Name
+        fontSize = [int]$textBox.Font.Size
     }
     $s | ConvertTo-Json | Set-Content $settingsPath -Encoding UTF8
 }
@@ -230,7 +234,7 @@ $optPanel.Add_Resize({
 function ShowSettings {
     $dlg = New-Object System.Windows.Forms.Form
     $dlg.Text            = 'Fling Settings'
-    $dlg.Size            = New-Object System.Drawing.Size(400, 350)
+    $dlg.Size            = New-Object System.Drawing.Size(400, 390)
     $dlg.FormBorderStyle = 'FixedDialog'
     $dlg.StartPosition   = 'CenterParent'
     $dlg.MaximizeBox     = $false
@@ -319,6 +323,37 @@ function ShowSettings {
     $hintLbl.Font      = New-Object System.Drawing.Font('Segoe UI', 8)
     $dlg.Controls.Add($hintLbl)
     $yPos += 30
+
+    # Font selector
+    $fontLbl = New-Object System.Windows.Forms.Label
+    $fontLbl.Text      = 'Font'
+    $fontLbl.Location  = New-Object System.Drawing.Point(20, ($yPos + 4))
+    $fontLbl.AutoSize  = $true
+    $fontLbl.ForeColor = $fgText
+    $fontLbl.Font      = $dlgFont
+    $dlg.Controls.Add($fontLbl)
+
+    $fontCombo = New-Object System.Windows.Forms.ComboBox
+    $fontCombo.Location      = New-Object System.Drawing.Point(100, $yPos)
+    $fontCombo.Size           = New-Object System.Drawing.Size(235, 28)
+    $fontCombo.DropDownStyle  = 'DropDownList'
+    $fontCombo.Font           = $dlgFontSm
+    $fontCombo.BackColor      = [System.Drawing.Color]::FromArgb(40, 40, 60)
+    $fontCombo.ForeColor      = $fgText
+    $fontCombo.FlatStyle      = 'Flat'
+
+    $fontList = @('Segoe UI Emoji', 'Segoe UI', 'Consolas', 'D2Coding', 'Malgun Gothic')
+    foreach ($fn in $fontList) {
+        $fontCombo.Items.Add($fn) | Out-Null
+    }
+    $currentIdx = $fontList.IndexOf($settings.fontName)
+    if ($currentIdx -ge 0) { $fontCombo.SelectedIndex = $currentIdx } else { $fontCombo.SelectedIndex = 0 }
+
+    $fontCombo.Add_SelectedIndexChanged({
+        $textBox.Font = New-Object System.Drawing.Font($fontCombo.SelectedItem.ToString(), $settings.fontSize)
+    })
+    $dlg.Controls.Add($fontCombo)
+    $yPos += 35
 
     # Opacity slider
     $opLbl = New-Object System.Windows.Forms.Label
@@ -423,7 +458,7 @@ $label.Padding   = New-Object System.Windows.Forms.Padding(8, 3, 0, 0)
 # ── Text input (WinForms RichTextBox = native IME support) ──
 $textBox = New-Object System.Windows.Forms.RichTextBox
 $textBox.Dock             = 'Fill'
-$textBox.Font             = New-Object System.Drawing.Font('Segoe UI', 13)
+$textBox.Font             = New-Object System.Drawing.Font($settings.fontName, $settings.fontSize)
 $textBox.BackColor        = $bgInput
 $textBox.ForeColor        = $fgText
 $textBox.BorderStyle      = 'None'
@@ -576,7 +611,7 @@ $textBox.Add_KeyDown({
     if ($e.KeyCode -eq [System.Windows.Forms.Keys]::Return -and -not $e.Shift) {
         $e.SuppressKeyPress = $true
     }
-    # Force plain text paste (prevent RTF formatting from changing font)
+    # Force plain text paste
     if ($e.Control -and $e.KeyCode -eq [System.Windows.Forms.Keys]::V) {
         $e.SuppressKeyPress = $true
         if ([System.Windows.Forms.Clipboard]::ContainsText()) {
