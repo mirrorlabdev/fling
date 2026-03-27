@@ -39,8 +39,8 @@ Modern AI workflows involve juggling multiple windows — Claude Code in one ter
 
 ```
 ┌──────────────┐  ┌──────────────┐  ┌──────────────┐
-│ Claude Code  │  │   ChatGPT    │  │  Copilot CLI  │
-│  (terminal)  │  │  (browser)   │  │  (terminal)   │
+│ Claude Code  │  │   ChatGPT    │  │  Copilot CLI │
+│  (terminal)  │  │  (browser)   │  │  (terminal)  │
 └──────┬───────┘  └──────┬───────┘  └──────┬───────┘
        │                 │                 │
        └────────── Fling ──────────────────┘
