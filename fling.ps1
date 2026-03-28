@@ -891,6 +891,10 @@ $hkWin.Add_HotkeyPressed({
                 [System.Windows.Clipboard]::SetText($text)
                 Start-Sleep -Milliseconds 50
                 SendCtrlV
+                if ($chkEnter.IsChecked) {
+                    Start-Sleep -Milliseconds 150
+                    SendEnterKey
+                }
                 Start-Sleep -Milliseconds 100
                 if ($oldClip) {
                     try { [System.Windows.Clipboard]::SetText($oldClip) } catch {}
